@@ -1,16 +1,139 @@
 (function () {
+  var VERSION = 6;
+
   if (window !== window.top) return; // Don't run inside iframes
-  if (window.SB_SURVEY_EMBED) return;
+
+  // Take over from an older copy instead of bailing out. The original guard was
+  // `if (window.SB_SURVEY_EMBED) return;` — with that, a stale cached copy that
+  // loaded first would win and this script would silently do nothing.
+  if (window.SB_SURVEY_EMBED) {
+    if (window.SB_SURVEY_EMBED.VERSION >= VERSION) return;
+    try { window.SB_SURVEY_EMBED.unmount(); } catch (e) {}
+  }
+
   window.SB_SURVEY_EMBED = {
+    VERSION: VERSION,
+
+    // Flip to true and reload to log every mount/unmount decision.
+    DEBUG: false,
+
     SURVEY_URL: 'https://oneconnect.wilsonco.com/content/staffbase.murrayai/6a85b0631fe4f95947a0c360',
+
+    // The only page this may run on:
+    // https://oneconnect.wilsonco.com/content/page/6a57fa40c8e6e36dfd2cf27d
+    //
+    // Staffbase sets data-menu-id on <html> to the current page's ID and
+    // updates it on every client-side route change — verified live on this
+    // instance. This is checked before anything is added to the DOM, and
+    // re-checked on every route change.
+    TARGET_PAGE_ID: '6a57fa40c8e6e36dfd2cf27d',
+
+    _observers: [],
+    _mounted: false,
+
     init: function () {
       SB_SURVEY_EMBED.injectStyles();
+      SB_SURVEY_EMBED.watchRoute();
+      SB_SURVEY_EMBED.syncToRoute('init');
+    },
+
+    log: function () {
+      if (!SB_SURVEY_EMBED.DEBUG) return;
+      console.log.apply(console, ['[sb-survey]'].concat([].slice.call(arguments)));
+    },
+
+    // data-menu-id is Staffbase's own signal, independent of URL shape, locale
+    // prefixes and query strings. The path check is a fallback in case the
+    // attribute disappears in a future release.
+    isTargetPage: function () {
+      var id = SB_SURVEY_EMBED.TARGET_PAGE_ID;
+      var root = document.documentElement;
+      if (root.hasAttribute('data-menu-id')) {
+        return root.getAttribute('data-menu-id') === id;
+      }
+      var path = (location.pathname || '').replace(/\/+$/, '').toLowerCase();
+      return path.endsWith('/' + id.toLowerCase());
+    },
+
+    // Staffbase's frontend is a single-page app: this file is evaluated once per
+    // hard load, so a one-time check at startup would leave the tab stranded on
+    // every page thereafter. Watching data-menu-id catches every route change,
+    // including back/forward. The rest is belt-and-braces.
+    watchRoute: function () {
+      var mo = new MutationObserver(function () {
+        SB_SURVEY_EMBED.syncToRoute('attr');
+      });
+      mo.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ['data-menu-id', 'data-installation-id', 'data-current-page-type'],
+      });
+      // Deliberately not in _observers: this one must outlive unmount().
+      SB_SURVEY_EMBED._routeObserver = mo;
+
+      ['pushState', 'replaceState'].forEach(function (fn) {
+        var original = history[fn];
+        history[fn] = function () {
+          var result = original.apply(this, arguments);
+          SB_SURVEY_EMBED.syncToRoute(fn);
+          return result;
+        };
+      });
+      window.addEventListener('popstate', function () {
+        SB_SURVEY_EMBED.syncToRoute('popstate');
+      });
+
+      // Safety net against a stale copy of this script re-adding the tab.
+      // Cheap: getElementById short-circuits on the common case.
+      setInterval(function () {
+        if (document.getElementById('sb-survey-tab') && !SB_SURVEY_EMBED.isTargetPage()) {
+          SB_SURVEY_EMBED.sweep();
+        }
+      }, 1000);
+    },
+
+    syncToRoute: function (src) {
+      var match = SB_SURVEY_EMBED.isTargetPage();
+      if (match === SB_SURVEY_EMBED._mounted) return;
+      SB_SURVEY_EMBED.log(match ? 'mount' : 'unmount', 'via', src, location.pathname);
+      if (match) {
+        SB_SURVEY_EMBED.mount();
+      } else {
+        SB_SURVEY_EMBED.unmount();
+      }
+    },
+
+    // Remove tab/overlay nodes regardless of which copy of the script created
+    // them, so a lingering older version can't leave its UI on screen.
+    sweep: function () {
+      document.querySelectorAll('#sb-survey-tab, #sb-survey-overlay')
+        .forEach(function (el) {
+          if (el.parentNode) el.parentNode.removeChild(el);
+        });
+    },
+
+    mount: function () {
+      if (SB_SURVEY_EMBED._mounted) return;
+      if (!document.body) return;
+      SB_SURVEY_EMBED.sweep(); // avoid duplicates
+      SB_SURVEY_EMBED._mounted = true;
       SB_SURVEY_EMBED.createTab();
       SB_SURVEY_EMBED.createModal();
       SB_SURVEY_EMBED.watchForModals();
     },
+
+    unmount: function () {
+      SB_SURVEY_EMBED._observers.forEach(function (o) {
+        try { o.disconnect(); } catch (e) {}
+      });
+      SB_SURVEY_EMBED._observers = [];
+      SB_SURVEY_EMBED.sweep();
+      SB_SURVEY_EMBED._mounted = false;
+    },
+
     injectStyles: function () {
+      if (document.getElementById('sb-survey-styles')) return;
       var style = document.createElement('style');
+      style.id = 'sb-survey-styles';
       style.textContent = `
         #sb-survey-tab {
           position: fixed;
@@ -132,15 +255,26 @@
       document.body.appendChild(overlay);
     },
     openModal: function () {
-      document.getElementById('sb-survey-overlay').classList.add('open');
-      document.getElementById('sb-survey-tab').style.display = 'none';
+      var overlay = document.getElementById('sb-survey-overlay');
+      var tab = document.getElementById('sb-survey-tab');
+      if (overlay) overlay.classList.add('open');
+      if (tab) tab.style.display = 'none';
     },
     closeModal: function () {
-      document.getElementById('sb-survey-overlay').classList.remove('open');
-      document.getElementById('sb-survey-tab').style.display = '';
+      var overlay = document.getElementById('sb-survey-overlay');
+      var tab = document.getElementById('sb-survey-tab');
+      if (overlay) overlay.classList.remove('open');
+      if (tab) tab.style.display = '';
     },
     cleanIframeDoc: function (doc) {
-      if (!doc) return;
+      // Only works when SURVEY_URL is same-origin with the page. Verified
+      // same-origin on oneconnect.wilsonco.com. On any other instance the
+      // iframe is cross-origin, contentDocument is null, and this becomes a
+      // silent no-op — the modal then shows the full app chrome.
+      if (!doc) {
+        SB_SURVEY_EMBED.log('iframe not readable — cross-origin? chrome will not be stripped');
+        return;
+      }
       try {
         // Scrollbar CSS — only thing CSS handles reliably here
         if (doc.head) {
@@ -204,42 +338,71 @@
           childList: true, subtree: true,
           attributes: true, attributeFilter: ['style', 'class'],
         });
-      } catch (e) {}
+        SB_SURVEY_EMBED._observers.push(mo);
+      } catch (e) {
+        SB_SURVEY_EMBED.log('cleanIframeDoc failed', e);
+      }
     },
-    watchForModals: function () {
-      var tab = document.getElementById('sb-survey-tab');
 
-      function hasHostModal() {
+    // Rewritten to remove a self-triggering observer loop. The previous version
+    // observed document.body with { subtree: true, attributeFilter: [...,'style'] }
+    // and then wrote tab.style.display inside the callback. The tab is a child
+    // of body, so each write mutated an observed attribute and re-entered the
+    // callback. It also ran querySelector + getComputedStyle on every style or
+    // class change anywhere in the app, forcing a style recalc each time.
+    //
+    // Two changes make the loop structurally impossible:
+    //   1. The subtree observer watches childList only — no attributes — so our
+    //      own style writes cannot re-trigger it.
+    //   2. Scroll-lock is watched on body and <html> themselves, without
+    //      subtree, and we never write to either.
+    // The value-equality guard in update() is a second line of defence, and
+    // requestAnimationFrame coalesces bursts into one pass per frame.
+    watchForModals: function () {
+      var scheduled = null;
+
+      function desiredDisplay() {
         // ARIA semantics (standard)
         if (document.querySelector(
           '[role="dialog"]:not(#sb-survey-overlay):not(#sb-survey-modal),' +
           '[aria-modal="true"]:not(#sb-survey-overlay):not(#sb-survey-modal)'
-        )) return true;
+        )) return 'none';
         // Body/html scroll-lock (many modal libraries set this)
         var bodyStyle = window.getComputedStyle(document.body);
-        if (bodyStyle.overflow === 'hidden' || bodyStyle.overflowY === 'hidden') return true;
-        return false;
+        if (bodyStyle.overflow === 'hidden' || bodyStyle.overflowY === 'hidden') return 'none';
+        return '';
       }
 
-      function updateTabVisibility() {
-        // Our own modal handles its own tab visibility via openModal/closeModal
-        var ourModalOpen = document.getElementById('sb-survey-overlay').classList.contains('open');
-        if (ourModalOpen) return;
-        tab.style.display = hasHostModal() ? 'none' : '';
+      function update() {
+        scheduled = null;
+        var tab = document.getElementById('sb-survey-tab');
+        var overlay = document.getElementById('sb-survey-overlay');
+        if (!tab || !overlay) return; // unmounted
+        // Our own modal handles tab visibility via openModal/closeModal
+        if (overlay.classList.contains('open')) return;
+        var want = desiredDisplay();
+        if (tab.style.display !== want) tab.style.display = want;
       }
 
-      var observer = new MutationObserver(updateTabVisibility);
-      // Watch for DOM additions and attribute changes on body/html
-      observer.observe(document.body, {
-        childList: true,
-        subtree: true,
-        attributes: true,
-        attributeFilter: ['role', 'aria-modal', 'class', 'style'],
-      });
-      observer.observe(document.documentElement, {
+      function schedule() {
+        if (scheduled === null) scheduled = requestAnimationFrame(update);
+      }
+
+      var nodeObserver = new MutationObserver(schedule);
+      nodeObserver.observe(document.body, { childList: true, subtree: true });
+
+      var lockObserver = new MutationObserver(schedule);
+      lockObserver.observe(document.body, {
         attributes: true,
         attributeFilter: ['class', 'style'],
       });
+      lockObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ['class', 'style'],
+      });
+
+      SB_SURVEY_EMBED._observers.push(nodeObserver, lockObserver);
+      update();
     },
   };
   if (document.readyState === 'complete') {
