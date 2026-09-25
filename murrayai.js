@@ -213,7 +213,7 @@
     createTab: function () {
       var tab = document.createElement('div');
       tab.id = 'sb-survey-tab';
-      tab.textContent = 'Give Us Feedback';
+      tab.textContent = 'Chat with Murray';
       tab.addEventListener('click', SB_SURVEY_EMBED.openModal);
       document.body.appendChild(tab);
     },
