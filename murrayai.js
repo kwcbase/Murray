@@ -1,5 +1,5 @@
 (function () {
-  var VERSION = 8;
+  var VERSION = 9;
 
   if (window !== window.top) return; // Don't run inside iframes
 
@@ -175,13 +175,21 @@
       style.id = 'sb-survey-styles';
       style.textContent = `
         /* ---------- launcher: round, bottom-right, avatar on primary ------- */
+        /* The Staffbase app applies 'margin: 0 auto' and 'padding: 10px' to bare
+           <button> elements. Auto margins on a flex item absorb all free space
+           and silently override justify-content, so both of our buttons reset
+           margin and padding with !important rather than relying on ID
+           specificity — the host rules may themselves be !important. */
         #sb-survey-tab {
           position: fixed;
           bottom: 24px;
           right: 24px;
           width: 56px;
           height: 56px;
-          padding: 0;
+          margin: 0 !important;
+          padding: 0 !important;
+          box-sizing: border-box !important;
+          min-width: 0 !important;
           border: none;
           border-radius: 50%;
           background: ${c.primary};
@@ -274,7 +282,7 @@
           align-items: center;
           justify-content: space-between;
           gap: 8px;
-          padding: 12px 12px 12px 16px;
+          padding: 12px 8px 12px 16px;
           background: ${c.primary};
           color: #ffffff;
           font-family: sans-serif;
@@ -283,9 +291,15 @@
           line-height: 1.3;
         }
         #sb-survey-close {
-          width: 28px;
-          height: 28px;
-          flex: 0 0 auto;
+          width: 28px !important;
+          height: 28px !important;
+          flex: 0 0 auto !important;
+          /* auto on the left, 0 on the right: pushes the button to the header's
+             right edge and neutralises the host's centring auto margins. */
+          margin: 0 0 0 auto !important;
+          padding: 0 !important;
+          box-sizing: border-box !important;
+          min-width: 0 !important;
           border-radius: 50%;
           background: transparent;
           color: #ffffff;
