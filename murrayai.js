@@ -1,5 +1,5 @@
 (function () {
-  var VERSION = 9;
+  var VERSION = 10;
 
   if (window !== window.top) return; // Don't run inside iframes
 
@@ -37,6 +37,12 @@
       panel:   '#ffffff',  // panel background
       surface: '#f6f7f9',  // secondary surface
     },
+
+    // false: the chat loads the first time someone opens the panel, so page
+    // visitors who never open it pay nothing. true: it loads with the page, so
+    // the first open is instant. Either way it is loaded only once per page —
+    // closing never tears it down.
+    PRELOAD: false,
 
     PANEL_WIDTH: 400,
     PANEL_HEIGHT: 600,
@@ -256,8 +262,19 @@
         }
 
         /* ---------- panel: docked bottom-right, ~${w}x${h} ----------------- */
+        /* The panel stays in the layout at full size at all times; closing only
+           hides it visually. Using display:none would collapse the iframe to
+           0x0, and a chat UI that measures its container can re-initialise at
+           that point. visibility:hidden also drops it from the tab order and
+           the accessibility tree, so a hidden panel is not reachable. */
         #sb-survey-overlay {
-          display: none;
+          display: flex;
+          visibility: hidden;
+          opacity: 0;
+          pointer-events: none;
+          transform: translateY(8px);
+          transition: opacity 0.18s ease, transform 0.18s ease,
+                      visibility 0s linear 0.18s;
           position: fixed;
           bottom: 24px;
           right: 24px;
@@ -274,7 +291,12 @@
           flex-direction: column;
         }
         #sb-survey-overlay.open {
-          display: flex;
+          visibility: visible;
+          opacity: 1;
+          pointer-events: auto;
+          transform: translateY(0);
+          transition: opacity 0.18s ease, transform 0.18s ease,
+                      visibility 0s linear 0s;
         }
         #sb-survey-header {
           flex: 0 0 auto;
@@ -429,7 +451,7 @@
       var iframe = document.createElement('iframe');
       iframe.id = 'sb-survey-iframe';
       iframe.title = SB_SURVEY_EMBED.LABEL;
-      iframe.src = SB_SURVEY_EMBED.SURVEY_URL;
+      if (SB_SURVEY_EMBED.PRELOAD) iframe.src = SB_SURVEY_EMBED.SURVEY_URL;
       iframe.addEventListener('load', function () {
         SB_SURVEY_EMBED.cleanIframeDoc(iframe.contentDocument);
       });
@@ -450,6 +472,12 @@
     openModal: function () {
       var panel = document.getElementById('sb-survey-overlay');
       var tab = document.getElementById('sb-survey-tab');
+      // First open loads the chat; every later open reveals the same document,
+      // so the conversation is still there.
+      var iframe = document.getElementById('sb-survey-iframe');
+      if (iframe && !iframe.getAttribute('src')) {
+        iframe.src = SB_SURVEY_EMBED.SURVEY_URL;
+      }
       if (panel) panel.classList.add('open');
       if (tab) {
         tab.style.display = 'none';
@@ -458,6 +486,9 @@
       var closeBtn = document.getElementById('sb-survey-close');
       if (closeBtn) closeBtn.focus();
     },
+    // Hide only — the panel and its iframe are never removed here, so the
+    // conversation survives close/reopen. The panel is torn down only by
+    // unmount(), i.e. when the user leaves the target page entirely.
     closeModal: function () {
       var panel = document.getElementById('sb-survey-overlay');
       var tab = document.getElementById('sb-survey-tab');
